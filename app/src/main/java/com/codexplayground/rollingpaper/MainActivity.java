@@ -27,6 +27,7 @@ import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.io.UnsupportedEncodingException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
@@ -807,7 +808,11 @@ public class MainActivity extends Activity {
     }
 
     private String url(String text) {
-        return URLEncoder.encode(text, StandardCharsets.UTF_8);
+        try {
+            return URLEncoder.encode(text, "UTF-8");
+        } catch (UnsupportedEncodingException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private String path(String text) {
