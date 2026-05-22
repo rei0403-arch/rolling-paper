@@ -1,0 +1,7 @@
+.gradle/
+build/
+app/build/
+out/
+*.apk
+!docs/*.apk
+debug.keystore
