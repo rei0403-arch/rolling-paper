@@ -15,7 +15,6 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -59,7 +58,6 @@ public class MainActivity extends Activity {
     private EditText roomInput;
     private EditText nicknameInput;
     private EditText messageInput;
-    private CheckBox anonymousCheck;
     private TextView statusText;
     private TextView currentRoomText;
     private LinearLayout messagesLayout;
@@ -170,15 +168,6 @@ public class MainActivity extends Activity {
         nicknameInput = editText("닉네임", false, 16);
         nicknameInput.setText(prefs.getString("nickname", ""));
         writeBox.addView(nicknameInput, new LinearLayout.LayoutParams(-1, dp(50)));
-
-        anonymousCheck = new CheckBox(this);
-        anonymousCheck.setText("익명으로 남기기");
-        anonymousCheck.setTextColor(INK);
-        anonymousCheck.setTextSize(15);
-        anonymousCheck.setButtonTintList(android.content.res.ColorStateList.valueOf(ACCENT));
-        anonymousCheck.setChecked(prefs.getBoolean("anonymous", false));
-        anonymousCheck.setPadding(0, dp(4), 0, dp(4));
-        writeBox.addView(anonymousCheck);
 
         messageInput = editText("메시지를 적어줘", false, 220);
         messageInput.setGravity(Gravity.TOP | Gravity.START);
@@ -321,7 +310,6 @@ public class MainActivity extends Activity {
         }
         String code = cleanRoomCode(currentRoomCode.isEmpty() ? roomInput.getText().toString() : currentRoomCode);
         String text = messageInput.getText().toString().trim();
-        boolean anonymous = anonymousCheck.isChecked();
         String nickname = nicknameInput.getText().toString().trim();
 
         if (code.isEmpty()) {
@@ -332,8 +320,8 @@ public class MainActivity extends Activity {
             toastDialog("메시지 필요", "붙일 메시지를 적어줘.");
             return;
         }
-        if (!anonymous && nickname.isEmpty()) {
-            toastDialog("닉네임 필요", "닉네임을 쓰거나 익명 체크를 켜줘.");
+        if (nickname.isEmpty()) {
+            toastDialog("닉네임 필요", "친구들이 알아볼 수 있게 닉네임을 써줘.");
             return;
         }
 
@@ -341,7 +329,6 @@ public class MainActivity extends Activity {
         prefs.edit()
                 .putString("roomCode", code)
                 .putString("nickname", nickname)
-                .putBoolean("anonymous", anonymous)
                 .apply();
         updateRoomLabel();
         hideKeyboard();
@@ -350,7 +337,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 ensureSignedIn();
-                uploadMessage(code, text, anonymous ? "익명" : nickname, anonymous);
+                uploadMessage(code, text, nickname);
                 mainHandler.post(() -> {
                     messageInput.setText("");
                     setStatus("메시지 붙였어");
@@ -546,14 +533,13 @@ public class MainActivity extends Activity {
         http("PUT", endpoint, meta.toString(), null);
     }
 
-    private void uploadMessage(String roomCode, String text, String author, boolean anonymous) throws Exception {
+    private void uploadMessage(String roomCode, String text, String author) throws Exception {
         long now = System.currentTimeMillis();
         JSONObject message = new JSONObject();
         message.put("roomCode", roomCode);
         message.put("text", text);
         message.put("author", author);
         message.put("authorUid", uid);
-        message.put("anonymous", anonymous);
         message.put("createdAt", now);
 
         String endpoint = rtdbUrl("rooms/" + path(roomCode) + "/messages.json");
@@ -624,7 +610,7 @@ public class MainActivity extends Activity {
                 continue;
             }
             addMessageCard(
-                    getStringField(fields, "author", "익명"),
+                    getStringField(fields, "author", "친구"),
                     getStringField(fields, "text", ""),
                     getLongField(fields, "createdAt", 0L)
             );

@@ -1,6 +1,6 @@
 # RollingPaper
 
-Android rolling-paper prototype with Firebase anonymous auth and Realtime Database REST streaming.
+Android rolling-paper prototype with Firebase guest auth, required nicknames, and Realtime Database REST streaming.
 
 ## Build
 
@@ -32,6 +32,6 @@ Firebase console steps:
 
 1. Create a new Firebase project.
 2. Add an Android app with package `com.codexplayground.rollingpaper`.
-3. Enable Authentication > Sign-in method > Anonymous.
+3. Enable Authentication > Sign-in method > Anonymous. This is only for Firebase access; users still write a nickname in the app.
 4. Create Realtime Database.
 5. Use the Realtime Database rules from `FIREBASE_SETUP.md`.
