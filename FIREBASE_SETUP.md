@@ -1,95 +1,48 @@
 # Firebase setup for RollingPaper
 
-## 1. Create project
+This app uses Firebase Anonymous Auth and Realtime Database REST streaming.
 
-Create a new Firebase project.
+## Already configured
 
-Recommended project name:
+- Project ID: `rolling-paper-4a35c`
+- Package name: `com.codexplayground.rollingpaper`
+- Realtime Database URL: `https://rolling-paper-4a35c-default-rtdb.firebaseio.com`
+- Anonymous Authentication: enabled
 
-```text
-rolling-paper
-```
+## App config
 
-## 2. Add Android app
-
-Package name:
-
-```text
-com.codexplayground.rollingpaper
-```
-
-Download `google-services.json` if Firebase offers it. This app does not require the file yet, but it is an easy place to copy the API key from.
-
-## 3. Enable Authentication
-
-Firebase Console > Authentication > Sign-in method:
-
-```text
-Anonymous = enabled
-```
-
-## 4. Create Firestore
-
-Firebase Console > Firestore Database:
-
-```text
-Create database
-```
-
-Start in test mode while checking the first prototype, or use the rules below.
-
-## 5. Put config values in code
-
-Edit:
+The app reads Firebase values from:
 
 ```text
 app\src\main\java\com\codexplayground\rollingpaper\FirebaseConfig.java
 ```
 
-Fill:
+The Android config file is saved at:
 
-```java
-static final String API_KEY = "your-api-key";
-static final String PROJECT_ID = "your-project-id";
+```text
+app\google-services.json
 ```
 
-You can find `PROJECT_ID` in Firebase Project settings. You can find `API_KEY` in the downloaded `google-services.json` under `api_key.current_key`.
+## Prototype Realtime Database rules
 
-## 6. Prototype Firestore rules
+Use these while testing with friends:
 
-```js
-rules_version = '2';
-
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /rooms/{roomId} {
-      allow read: if request.auth != null;
-      allow create, update: if request.auth != null
-        && request.resource.data.keys().hasOnly(['roomCode', 'ownerUid', 'updatedAt'])
-        && request.resource.data.roomCode is string
-        && request.resource.data.ownerUid == request.auth.uid;
-      allow delete: if false;
-
-      match /messages/{messageId} {
-        allow read: if request.auth != null;
-        allow create: if request.auth != null
-          && request.resource.data.keys().hasOnly([
-            'roomCode',
-            'text',
-            'author',
-            'authorUid',
-            'anonymous',
-            'createdAt'
-          ])
-          && request.resource.data.roomCode is string
-          && request.resource.data.text is string
-          && request.resource.data.text.size() > 0
-          && request.resource.data.text.size() <= 220
-          && request.resource.data.author is string
-          && request.resource.data.authorUid == request.auth.uid
-          && request.resource.data.anonymous is bool
-          && request.resource.data.createdAt is int;
-        allow update, delete: if false;
+```json
+{
+  "rules": {
+    "rooms": {
+      "$roomCode": {
+        ".read": "auth != null",
+        "meta": {
+          ".write": "auth != null"
+        },
+        "messages": {
+          ".indexOn": ["createdAt"],
+          "$messageId": {
+            ".write": "auth != null && !data.exists() && newData.child('authorUid').val() == auth.uid",
+            ".validate": "newData.hasChildren(['roomCode', 'text', 'author', 'authorUid', 'anonymous', 'createdAt']) && newData.child('text').isString() && newData.child('text').val().length > 0 && newData.child('text').val().length <= 220"
+          }
+        }
       }
     }
   }

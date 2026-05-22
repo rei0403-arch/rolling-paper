@@ -1,0 +1,30 @@
+﻿{
+  "project_info": {
+    "project_number": "343058779507",
+    "firebase_url": "https://rolling-paper-4a35c-default-rtdb.firebaseio.com",
+    "project_id": "rolling-paper-4a35c",
+    "storage_bucket": "rolling-paper-4a35c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:343058779507:android:ca3006f8fc0bad7ff34906",
+        "android_client_info": {
+          "package_name": "com.codexplayground.rollingpaper"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCm1-NU0rfsWUbiWft-DzRgIzOYGdUyMQY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

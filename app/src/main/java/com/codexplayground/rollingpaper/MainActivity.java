@@ -33,7 +33,12 @@ import java.net.URL;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Random;
 
@@ -46,22 +51,9 @@ public class MainActivity extends Activity {
     private static final int ACCENT_DARK = Color.rgb(29, 89, 76);
     private static final int CARD = Color.WHITE;
     private static final int LINE = Color.rgb(221, 215, 202);
-    private static final long AUTO_REFRESH_MS = 5000L;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Random random = new Random();
-    private final Runnable autoRefreshLoop = new Runnable() {
-        @Override
-        public void run() {
-            if (!autoRefreshActive) {
-                return;
-            }
-            if (FirebaseConfig.isConfigured() && !currentRoomCode.isEmpty()) {
-                refreshMessages(true);
-            }
-            mainHandler.postDelayed(this, AUTO_REFRESH_MS);
-        }
-    };
 
     private SharedPreferences prefs;
     private EditText roomInput;
@@ -75,8 +67,10 @@ public class MainActivity extends Activity {
     private String currentRoomCode = "";
     private String uid = "";
     private String idToken = "";
-    private boolean autoRefreshActive;
+    private String streamingRoomCode = "";
+    private volatile boolean streamActive;
     private volatile boolean refreshInFlight;
+    private Thread streamThread;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -404,7 +398,7 @@ public class MainActivity extends Activity {
                 JSONArray docs = fetchMessages(code);
                 mainHandler.post(() -> {
                     renderMessages(docs);
-                    setStatus(docs.length() + "개 확인됨 / 자동 새로고침 켜짐");
+                    setStatus(docs.length() + "개 확인됨 / 실시간 연결됨");
                 });
             } catch (Exception e) {
                 if (!quiet) {
@@ -419,18 +413,88 @@ public class MainActivity extends Activity {
     }
 
     private void startAutoRefresh() {
-        if (autoRefreshActive || !FirebaseConfig.isConfigured() || currentRoomCode.isEmpty()) {
+        String code = cleanRoomCode(currentRoomCode);
+        if (!FirebaseConfig.isConfigured() || code.isEmpty()) {
             return;
         }
-        autoRefreshActive = true;
-        mainHandler.removeCallbacks(autoRefreshLoop);
-        mainHandler.postDelayed(autoRefreshLoop, AUTO_REFRESH_MS);
-        setStatus("자동 새로고침 켜짐: 5초마다 확인");
+        if (streamActive && code.equals(streamingRoomCode)) {
+            return;
+        }
+        stopAutoRefresh();
+        streamActive = true;
+        streamingRoomCode = code;
+        streamThread = new Thread(() -> streamMessages(code), "rolling-paper-rtdb-stream");
+        streamThread.start();
+        setStatus("실시간 연결 중...");
     }
 
     private void stopAutoRefresh() {
-        autoRefreshActive = false;
-        mainHandler.removeCallbacks(autoRefreshLoop);
+        streamActive = false;
+        streamingRoomCode = "";
+        if (streamThread != null) {
+            streamThread.interrupt();
+            streamThread = null;
+        }
+    }
+
+    private void streamMessages(String roomCode) {
+        while (streamActive && roomCode.equals(streamingRoomCode)) {
+            HttpURLConnection connection = null;
+            try {
+                ensureSignedIn();
+                String endpoint = rtdbUrl("rooms/" + path(roomCode) + "/messages.json")
+                        + "&orderBy=%22createdAt%22&limitToLast=80";
+                connection = (HttpURLConnection) new URL(endpoint).openConnection();
+                connection.setConnectTimeout(12000);
+                connection.setReadTimeout(0);
+                connection.setRequestMethod("GET");
+                connection.setRequestProperty("Accept", "text/event-stream");
+                connection.setRequestProperty("Cache-Control", "no-cache");
+
+                int code = connection.getResponseCode();
+                if (code < 200 || code >= 300) {
+                    throw new RuntimeException("HTTP " + code + " " + readFully(connection.getErrorStream()));
+                }
+
+                mainHandler.post(() -> {
+                    setStatus("실시간 연결됨");
+                    refreshMessages(true);
+                });
+
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
+                    String line;
+                    String event = "";
+                    while (streamActive
+                            && roomCode.equals(streamingRoomCode)
+                            && (line = reader.readLine()) != null) {
+                        if (line.startsWith("event:")) {
+                            event = line.substring("event:".length()).trim();
+                        } else if (line.startsWith("data:")) {
+                            String data = line.substring("data:".length()).trim();
+                            if ("put".equals(event) || "patch".equals(event)) {
+                                mainHandler.post(() -> refreshMessages(true));
+                            }
+                            event = "";
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                if (streamActive && roomCode.equals(streamingRoomCode)) {
+                    String message = shortError(e);
+                    mainHandler.post(() -> setStatus("실시간 재연결 중: " + message));
+                    try {
+                        Thread.sleep(3000);
+                    } catch (InterruptedException ignored) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            } finally {
+                if (connection != null) {
+                    connection.disconnect();
+                }
+            }
+        }
     }
 
     private boolean ensureConfigured() {
@@ -473,58 +537,66 @@ public class MainActivity extends Activity {
     }
 
     private void upsertRoom(String roomCode) throws Exception {
-        JSONObject fields = new JSONObject();
-        fields.put("roomCode", stringValue(roomCode));
-        fields.put("ownerUid", stringValue(uid));
-        fields.put("updatedAt", intValue(System.currentTimeMillis()));
+        JSONObject meta = new JSONObject();
+        meta.put("roomCode", roomCode);
+        meta.put("ownerUid", uid);
+        meta.put("updatedAt", System.currentTimeMillis());
 
-        JSONObject body = new JSONObject();
-        body.put("fields", fields);
-
-        String endpoint = firestoreBase()
-                + "/documents/rooms/"
-                + path(roomCode)
-                + "?updateMask.fieldPaths=roomCode&updateMask.fieldPaths=ownerUid&updateMask.fieldPaths=updatedAt";
-        http("PATCH", endpoint, body.toString(), idToken);
+        String endpoint = rtdbUrl("rooms/" + path(roomCode) + "/meta.json");
+        http("PUT", endpoint, meta.toString(), null);
     }
 
     private void uploadMessage(String roomCode, String text, String author, boolean anonymous) throws Exception {
         long now = System.currentTimeMillis();
-        JSONObject fields = new JSONObject();
-        fields.put("roomCode", stringValue(roomCode));
-        fields.put("text", stringValue(text));
-        fields.put("author", stringValue(author));
-        fields.put("authorUid", stringValue(uid));
-        fields.put("anonymous", boolValue(anonymous));
-        fields.put("createdAt", intValue(now));
+        JSONObject message = new JSONObject();
+        message.put("roomCode", roomCode);
+        message.put("text", text);
+        message.put("author", author);
+        message.put("authorUid", uid);
+        message.put("anonymous", anonymous);
+        message.put("createdAt", now);
 
-        JSONObject body = new JSONObject();
-        body.put("fields", fields);
-
-        String messageId = now + "_" + Integer.toHexString(random.nextInt());
-        String endpoint = firestoreBase()
-                + "/documents/rooms/"
-                + path(roomCode)
-                + "/messages?documentId="
-                + url(messageId);
-        http("POST", endpoint, body.toString(), idToken);
+        String endpoint = rtdbUrl("rooms/" + path(roomCode) + "/messages.json");
+        http("POST", endpoint, message.toString(), null);
     }
 
     private JSONArray fetchMessages(String roomCode) throws Exception {
-        String endpoint = firestoreBase()
-                + "/documents/rooms/"
-                + path(roomCode)
-                + "/messages?pageSize=80&orderBy=createdAt%20desc";
-        JSONObject response = new JSONObject(http("GET", endpoint, null, idToken));
-        JSONArray docs = response.optJSONArray("documents");
-        return docs == null ? new JSONArray() : docs;
+        String endpoint = rtdbUrl("rooms/" + path(roomCode) + "/messages.json")
+                + "&orderBy=%22createdAt%22&limitToLast=80";
+        String raw = http("GET", endpoint, null, null);
+        if (raw == null || raw.trim().isEmpty() || "null".equals(raw.trim())) {
+            return new JSONArray();
+        }
+
+        JSONObject messages = new JSONObject(raw);
+        List<JSONObject> sorted = new ArrayList<>();
+        Iterator<String> keys = messages.keys();
+        while (keys.hasNext()) {
+            JSONObject message = messages.optJSONObject(keys.next());
+            if (message != null) {
+                sorted.add(message);
+            }
+        }
+        Collections.sort(sorted, new Comparator<JSONObject>() {
+            @Override
+            public int compare(JSONObject left, JSONObject right) {
+                return Long.compare(right.optLong("createdAt", 0L), left.optLong("createdAt", 0L));
+            }
+        });
+
+        JSONArray docs = new JSONArray();
+        for (JSONObject message : sorted) {
+            docs.put(message);
+        }
+        return docs;
     }
 
-    private String firestoreBase() {
-        return "https://firestore.googleapis.com/v1/projects/"
-                + url(FirebaseConfig.PROJECT_ID)
-                + "/databases/"
-                + url(FirebaseConfig.DATABASE_ID);
+    private String rtdbUrl(String pathAndQuery) {
+        String base = FirebaseConfig.DATABASE_URL.endsWith("/")
+                ? FirebaseConfig.DATABASE_URL.substring(0, FirebaseConfig.DATABASE_URL.length() - 1)
+                : FirebaseConfig.DATABASE_URL;
+        String separator = pathAndQuery.contains("?") ? "&" : "?";
+        return base + "/" + pathAndQuery + separator + "auth=" + url(idToken);
     }
 
     private JSONObject stringValue(String value) throws Exception {
@@ -547,9 +619,7 @@ public class MainActivity extends Activity {
         }
 
         for (int i = 0; i < docs.length(); i++) {
-            JSONObject fields = docs.optJSONObject(i) == null
-                    ? null
-                    : docs.optJSONObject(i).optJSONObject("fields");
+            JSONObject fields = docs.optJSONObject(i);
             if (fields == null) {
                 continue;
             }
@@ -608,19 +678,28 @@ public class MainActivity extends Activity {
     }
 
     private String getStringField(JSONObject fields, String name, String fallback) {
-        JSONObject field = fields.optJSONObject(name);
-        if (field == null) {
+        Object field = fields.opt(name);
+        if (field == null || JSONObject.NULL.equals(field)) {
             return fallback;
         }
-        return field.optString("stringValue", fallback);
+        if (field instanceof JSONObject) {
+            return ((JSONObject) field).optString("stringValue", fallback);
+        }
+        String value = String.valueOf(field);
+        return value.trim().isEmpty() ? fallback : value;
     }
 
     private long getLongField(JSONObject fields, String name, long fallback) {
-        JSONObject field = fields.optJSONObject(name);
-        if (field == null) {
+        Object field = fields.opt(name);
+        if (field == null || JSONObject.NULL.equals(field)) {
             return fallback;
         }
-        String raw = field.optString("integerValue", "");
+        if (field instanceof Number) {
+            return ((Number) field).longValue();
+        }
+        String raw = field instanceof JSONObject
+                ? ((JSONObject) field).optString("integerValue", "")
+                : String.valueOf(field);
         if (raw.isEmpty()) {
             return fallback;
         }
